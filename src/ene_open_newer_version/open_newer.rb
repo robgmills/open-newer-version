@@ -44,21 +44,79 @@ module Eneroth
 
       # Run system call without flashing command line window on Windows.
       # Runs asynchronously.
-      # Windows only hack.
       #
-      # @param cmd String.
+      # @param args [Array<String>]
       #
       # @return [Void].
-      def self.system_call(cmd)
-        # HACK: Run the command through a VBS script to avoid flashing command line
-        # window.
-        file = Tempfile.new(["cmd", ".vbs"])
-        file.write("Set WshShell = CreateObject(\"WScript.Shell\")\n")
-        file.write("WshShell.Run \"#{cmd.gsub('"', '""')}\", 0\n")
-        file.close
-        UI.openURL("file://#{file.path}")
+      def self.system_call(args)
+        if platform_win?
+          # HACK: Run the command through a VBS script to avoid flashing command line
+          # window.
+          cmd = args.map { |arg| arg.to_s.gsub('"', '""') }
+          command = cmd.map { |arg| "\"#{arg}\"" }.join(" ")
+          file = Tempfile.new(["cmd", ".vbs"])
+          file.write("Set WshShell = CreateObject(\"WScript.Shell\")\n")
+          file.write("WshShell.Run \"#{command}\", 0\n")
+          file.close
+          UI.openURL("file://#{file.path}")
+          return nil
+        end
+
+        pid = spawn(*args)
+        Process.detach(pid)
 
         nil
+      end
+
+      # Get platform identifier used by the plugin.
+      #
+      # @return [Symbol]
+      def self.platform
+        Sketchup.platform
+      end
+
+      # @return [Boolean]
+      def self.platform_win?
+        platform == :platform_win
+      end
+
+      # @return [Boolean]
+      def self.platform_osx?
+        platform == :platform_osx
+      end
+
+      # @return [String]
+      def self.platform_label
+        return "Windows" if platform_win?
+        return "macOS" if platform_osx?
+
+        platform.to_s
+      end
+
+      # @return [String]
+      def self.converter_path
+        filename = if platform_win?
+          "ConvertVersion.exe"
+        else
+          "ConvertVersion-mac"
+        end
+        File.join(PLUGIN_DIR, "bin", filename)
+      end
+
+      # @return [Boolean]
+      def self.converter_present?
+        File.exist?(converter_path)
+      end
+
+      # @return [Boolean]
+      def self.ensure_converter_present
+        return true if converter_present?
+
+        UI.messagebox(
+          "Missing converter for #{platform_label}. " \
+          "Please install the platform-specific converter binary."
+        )
+        false
       end
 
       # Run block once a file has been created.
@@ -92,6 +150,8 @@ module Eneroth
       #
       # @return [Void]
       def self.convert_and_open(source, target)
+        return unless ensure_converter_present
+
         Sketchup.status_text = "Converting model to supported format..."
 
         # Since the hack for running the system command without a flashing window
@@ -100,7 +160,7 @@ module Eneroth
         # there is no existing file by the same name already.
         File.delete(target) if File.exist?(target)
 
-        system_call(%("#{PLUGIN_DIR}/bin/ConvertVersion" "#{source}" "#{target}" #{SU_VERSION}))
+        system_call([converter_path, source, target, SU_VERSION.to_s])
         on_exist(target, false) { Sketchup.open_file(target) }
 
         nil
